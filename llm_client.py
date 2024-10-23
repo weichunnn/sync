@@ -11,7 +11,7 @@ class LLMClient:
     def generate(self, prompt: str) -> str:
         try:
             message = self.client.messages.create(
-                model="claude-3-opus-20240229",
+                model="claude-3-5-sonnet-20241022",
                 max_tokens=1024,
                 temperature=0.7,
                 system="You are a research expert tasked with generating innovative research ideas. Focus on practical, impactful suggestions that build upon existing research while considering business context and feasibility.",
