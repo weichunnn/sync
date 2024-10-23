@@ -13,33 +13,37 @@ from paper_filter import PaperFilter
 
 load_dotenv()
 
+
 class ArxivStreamProcessor:
-    def __init__(self, bootstrap_servers: str, api_key: str, api_secret: str, 
-                 llm_api_key: str):
+    def __init__(
+        self, bootstrap_servers: str, api_key: str, api_secret: str, llm_api_key: str
+    ):
         self.producer_config = {
-            'bootstrap.servers': bootstrap_servers,
-            'security.protocol': 'SASL_SSL',
-            'sasl.mechanisms': 'PLAIN',
-            'sasl.username': api_key,
-            'sasl.password': api_secret
+            "bootstrap.servers": bootstrap_servers,
+            "security.protocol": "SASL_SSL",
+            "sasl.mechanisms": "PLAIN",
+            "sasl.username": api_key,
+            "sasl.password": api_secret,
         }
 
-        
         self.consumer_config = {
             **self.producer_config,
-            'group.id': 'arxiv_processor',
-            'auto.offset.reset': 'earliest'
+            "group.id": "arxiv_processor",
+            "auto.offset.reset": "earliest",
         }
-        
+
         self.producer = Producer(self.producer_config)
         self.consumer = Consumer(self.consumer_config)
         self.llm_client = LLMClient(llm_api_key)
-        
+
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         self.admin_client = AdminClient(self.producer_config)
+        self.processed_paper_ids = set()
 
-    def create_topic_if_not_exists(self, topic_name: str, num_partitions: int = 1, replication_factor: int = 3):
+    def create_topic_if_not_exists(
+        self, topic_name: str, num_partitions: int = 1, replication_factor: int = 3
+    ):
         """Create a Kafka topic if it doesn't already exist"""
         topics = self.admin_client.list_topics().topics
         if topic_name not in topics:
@@ -47,52 +51,74 @@ class ArxivStreamProcessor:
             try:
                 self.admin_client.create_topics([new_topic])
                 self.logger.info(f"Created topic: {topic_name}")
-                # Wait for topic creation to propagate
+
                 time.sleep(5)
             except Exception as e:
                 self.logger.error(f"Error creating topic {topic_name}: {e}")
 
-
-    def fetch_arxiv_papers(self, categories: List[str], max_results: int = 100) -> List[Dict]:
+    def fetch_arxiv_papers(
+        self, categories: List[str], max_results: int = 10
+    ) -> List[Dict]:
         """Fetch recent papers from arXiv API with enhanced metadata"""
-        base_url = 'http://export.arxiv.org/api/query?'
-        
-        yesterday = datetime.now() - timedelta(days=1)
-        date_query = yesterday.strftime('%Y%m%d')
-        
-        category_query = ' OR '.join(f'cat:{cat}' for cat in categories)
-        query = (f'search_query={category_query}&sortBy=lastUpdatedDate'
-                f'&sortOrder=descending&max_results={max_results}')
-        
+        base_url = "http://export.arxiv.org/api/query?"
+
+        last_processed_date = datetime.now() - timedelta(days=7)
+        date_query = last_processed_date.strftime("%Y%m%d")
+
+        category_query = " OR ".join(f"cat:{cat}" for cat in categories)
+        query = f"search_query=({category_query})&sortBy=submittedDate&sortOrder=descending&max_results={max_results}"
+
+        print(f"Fetching papers with query: {query}")   
+
+
         try:
             response = requests.get(base_url + query)
             root = ET.fromstring(response.content)
-            
+
             papers = []
-            for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
-                # Enhanced metadata extraction
-                authors = [author.find('{http://www.w3.org/2005/Atom}name').text 
-                          for author in entry.findall('{http://www.w3.org/2005/Atom}author')]
-                
+            for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                authors = [
+                    author.find("{http://www.w3.org/2005/Atom}name").text
+                    for author in entry.findall("{http://www.w3.org/2005/Atom}author")
+                ]
+
                 paper = {
-                    'id': entry.find('{http://www.w3.org/2005/Atom}id').text,
-                    'title': entry.find('{http://www.w3.org/2005/Atom}title').text.replace('\n', ' '),
-                    'summary': entry.find('{http://www.w3.org/2005/Atom}summary').text.replace('\n', ' '),
-                    'categories': [cat.get('term') for cat in entry.findall('{http://www.w3.org/2005/Atom}category')],
-                    'authors': authors,
-                    'published': entry.find('{http://www.w3.org/2005/Atom}published').text,
-                    'updated': entry.find('{http://www.w3.org/2005/Atom}updated').text,
-                    'link': entry.find('{http://www.w3.org/2005/Atom}id').text
+                    "id": entry.find("{http://www.w3.org/2005/Atom}id").text,
+                    "title": entry.find(
+                        "{http://www.w3.org/2005/Atom}title"
+                    ).text.replace("\n", " "),
+                    "summary": entry.find(
+                        "{http://www.w3.org/2005/Atom}summary"
+                    ).text.replace("\n", " "),
+                    "categories": [
+                        cat.get("term")
+                        for cat in entry.findall(
+                            "{http://www.w3.org/2005/Atom}category"
+                        )
+                    ],
+                    "authors": authors,
+                    "published": entry.find(
+                        "{http://www.w3.org/2005/Atom}published"
+                    ).text,
+                    "updated": entry.find("{http://www.w3.org/2005/Atom}updated").text,
+                    "link": entry.find("{http://www.w3.org/2005/Atom}id").text,
                 }
                 papers.append(paper)
             
+            if papers:
+                self.last_processed_date = datetime.strptime(papers[0]['updated'], "%Y-%m-%dT%H:%M:%SZ")
+
+            print(f"Fetched {len(papers)} papers")
             return papers
         except Exception as e:
             self.logger.error(f"Error fetching papers: {e}")
             return []
 
-    def generate_research_idea(self, paper: Dict, company_context: Dict) -> Optional[Dict]:
-        """Generate research ideas using enhanced prompt"""
+    def categorize_rank(self, paper: Dict, context: Dict) -> Optional[Dict]:
+        """Generate relevance score for a paper based on the given context"""
+        is_company_context = "industry" in context
+        context_type = "Company" if is_company_context else "Project"
+
         prompt = f"""
         Paper Analysis:
         Title: {paper['title']}
@@ -100,117 +126,86 @@ class ArxivStreamProcessor:
         Summary: {paper['summary']}
         Categories: {', '.join(paper['categories'])}
         
-        Company Profile:
-        Industry: {company_context['industry']}
-        Research Focus Areas: {', '.join(company_context['research_focus'])}
-        Active Projects: {', '.join(company_context['current_projects'])}
-        Core Technologies: {', '.join(company_context.get('core_technologies', []))}
-        Available Resources: {', '.join(company_context.get('available_resources', []))}
+        {context_type} Profile:
+        {"Industry: " + context['industry'] if is_company_context else "Project Name: " + context['name']}
+        {"Research Focus Areas: " + ', '.join(context['research_focus']) if is_company_context else "Project Goals: " + ', '.join(context['goals'])}
+        {"Active Projects: " + ', '.join(context['current_projects']) if is_company_context else "Current Challenges: " + ', '.join(context['challenges'])}
+        {"Core Technologies: " + ', '.join(context.get('core_technologies', [])) if is_company_context else "Key Technologies: " + ', '.join(context.get('key_technologies', []))}
+        {"Available Resources: " + ', '.join(context.get('available_resources', [])) if is_company_context else ""}
         
-        Based on this information, please generate an innovative research idea that:
-        1. Extends or applies the paper's findings in a novel way
-        2. Aligns with the company's expertise and goals
-        3. Has clear commercial potential
-        4. Can be executed with available resources
-        5. Addresses a specific market need or technical challenge
+        Based on this information, please provide a relevance score from 0 to 100, where 100 is extremely relevant to the {context_type.lower()}'s goals and 0 is not relevant at all.
         
-        Provide your response in the following structured format:
-        
-        IDEA TITLE:
-        [A concise, descriptive title for the research idea]
-        
-        PROBLEM STATEMENT:
-        [Clear articulation of the problem or opportunity being addressed]
-        
-        TECHNICAL APPROACH:
-        - Key Innovation Points:
-          [List 2-3 main technical innovations]
-        - Methodology:
-          [Step-by-step research approach]
-        - Integration with Existing Work:
-          [How it builds on the paper's findings]
-        
-        BUSINESS IMPACT:
-        - Market Opportunity:
-          [Specific applications and target markets]
-        - Competitive Advantage:
-          [Why this approach is unique]
-        - Success Metrics:
-          [How to measure progress and impact]
-        
-        EXECUTION REQUIREMENTS:
-        - Team Expertise:
-          [Required skills and knowledge]
-        - Technical Resources:
-          [Required equipment, data, or infrastructure]
-        - Timeline:
-          [Estimated research and development phases]
-        - Risk Assessment:
-          [Key technical and market risks]
-        
-        NEXT STEPS:
-        [3-5 concrete actions to initiate this research]
+        Output only the numeric score (0-100) with no additional text or explanation.
         """
-        
+
         response = self.llm_client.generate(prompt)
         if response:
-            # Create a JSON-serializable dictionary
-            idea_dict = {
-                'paper_id': paper['id'],
-                'paper_title': paper['title'],
-                'paper_link': paper['link'],
-                'generated_idea': str(response),  # Ensure response is converted to string
-                'timestamp': datetime.now().isoformat(),
-                'relevance_score': paper.get('relevance_score', 0)
-            }
-            return idea_dict
+            try:
+                relevance_score = int(response.strip())
+                if 0 <= relevance_score <= 100:
+                    result = {
+                        "paper_id": paper["id"],
+                        "paper_title": paper["title"],
+                        "paper_link": paper["link"],
+                        "relevance_score": relevance_score,
+                        "timestamp": datetime.now().isoformat(),
+                        "context_type": context_type,
+                    }
+                    return result
+            except ValueError:
+                self.logger.error(f"Invalid relevance score: {response}")
         return None
 
-    def stream_papers_to_kafka(self, categories: List[str], topic: str, 
-                             company_context: Dict):
+    def stream_papers_to_kafka(
+        self, categories: List[str], topic: str, company_context: Dict
+    ):
         """Stream relevant papers to Kafka topic"""
         self.create_topic_if_not_exists(topic)
-        paper_filter = PaperFilter(company_context)
-        
+
         while True:
             try:
-                papers = self.fetch_arxiv_papers(categories)
-                relevant_papers = []
-                
+                papers = self.fetch_arxiv_papers(categories=categories)
+            
                 for paper in papers:
-                    if paper_filter.is_relevant(paper):
-                        paper['relevance_score'] = paper_filter.calculate_relevance(paper)
-                        relevant_papers.append(paper)
-                
-                # Sort by relevance score
-                relevant_papers.sort(key=lambda x: x['relevance_score'], reverse=True)
-                
-                for paper in relevant_papers:
                     self.producer.produce(
-                        topic,
-                        key=paper['id'],
-                        value=json.dumps(paper)
+                        topic, key=paper["id"], value=json.dumps(paper)
                     )
                 
+
                 self.producer.flush()
-                self.logger.info(f"Processed {len(relevant_papers)} relevant papers out of {len(papers)} total papers")
-                
-                time.sleep(3600)  # Fetch every hour
-                
+                self.logger.info(
+                    f"Fetched {len(papers)} papers successfully"
+                )
+
+                if len(self.processed_paper_ids) > 10000:
+                    self.processed_paper_ids = set(
+                        list(self.processed_paper_ids)[-10000:]
+                    )
+
+                time.sleep(120)
+
             except Exception as e:
                 self.logger.error(f"Error in paper streaming: {e}")
-                time.sleep(300)  # Wait 5 minutes before retrying
+                time.sleep(120)
 
-    def process_ideas(self, input_topic: str, output_topic: str, company_context: Dict):
-        """Process papers and generate ideas with error handling"""
+    def process_ideas(
+        self,
+        input_topic: str,
+        company: str,
+        company_context: Dict,
+        projects: Dict[str, Dict],
+    ):
+        """Process papers and generate ideas with separate company and project outputs"""
         self.create_topic_if_not_exists(input_topic)
-        self.create_topic_if_not_exists(output_topic)
+        self.create_topic_if_not_exists(company)
+        for topic in projects.keys():
+            self.create_topic_if_not_exists(f"{company}_{topic}")
         self.consumer.subscribe([input_topic])
-        
+
         while True:
             try:
                 msg = self.consumer.poll(1.0)
-                
+
                 if msg is None:
                     continue
                 if msg.error():
@@ -219,36 +214,50 @@ class ArxivStreamProcessor:
                     else:
                         self.logger.error(f"Consumer error: {msg.error()}")
                         break
-                        
+
                 paper = json.loads(msg.value())
-                idea = self.generate_research_idea(paper, company_context)
                 
-                if idea:
-                    try:
-                        # Verify JSON serialization before producing
-                        json_str = json.dumps(idea)
-                        
-                        self.producer.produce(
-                            output_topic,
-                            key=paper['id'],
-                            value=json_str
-                        )
-                        
-                        self.producer.flush()
-                        self.logger.info(f"Generated idea for paper: {paper['title']}")
-                        
-                        # Print the generated idea
-                        print(f"\nGenerated Research Idea:")
-                        print(f"Paper Title: {idea['paper_title']}")
-                        print(f"Paper Link: {idea['paper_link']}")
-                        print(f"Idea:\n{idea['generated_idea']}")
-                        print(f"Relevance Score: {idea['relevance_score']}")
-                        print("-" * 80)
-                    
-                    except TypeError as e:
-                        self.logger.error(f"JSON serialization error: {e}")
-                        continue
-                
+                # Check if the paper has already been processed
+                if paper["id"] in self.processed_paper_ids:
+                    self.logger.info(f"Skipping already processed paper: {paper['id']}")
+                    self.consumer.commit(msg)
+                    continue
+
+                company_idea = self.categorize_rank(paper, company_context)
+
+                if company_idea:
+                    self._produce_relevance(company, paper["id"], company_idea)
+
+                for topic, context in projects.items():
+                    project_idea = self.categorize_rank(paper, context)
+                    if project_idea:
+                        self._produce_relevance(f"{company}_{topic}", paper["id"], project_idea)
+
+                # Mark the paper as processed
+                self.processed_paper_ids.add(paper["id"])
+                self._log_generated_idea(f"Project ({topic})", project_idea)
+
+                # Commit the offset after processing the message
+                self.consumer.commit(msg)
             except Exception as e:
                 self.logger.error(f"Error processing ideas: {e}")
-                time.sleep(60)  # Wait before retrying
+                time.sleep(60)
+
+    def _produce_relevance(self, topic: str, key: str, idea: Dict):
+        """Helper method to produce an idea to a Kafka topic"""
+        try:
+            json_str = json.dumps(idea)
+            self.producer.produce(topic, key=key, value=json_str)
+            self.producer.flush()
+            self.logger.info(
+                f"Generated relevance for paper: {idea['paper_title']} in topic: {topic}"
+            )
+        except TypeError as e:
+            self.logger.error(f"JSON serialization error: {e}")
+
+    def _log_generated_idea(self, idea_type: str, idea: Dict):
+        """Helper method to log generated ideas"""
+        print(f"Paper Title: {idea['paper_title']}")
+        print(f"Context Type: {idea['context_type']}")
+        print(f"Relevance Score: {idea['relevance_score']}")
+        print("-" * 80)
