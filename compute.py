@@ -32,7 +32,10 @@ class LLMClient:
                     "content": prompt
                 }]
             )
-            return message.content
+            # Extract the string content from the message
+            if hasattr(message.content[0], 'text'):
+                return message.content[0].text
+            return str(message.content)
         except Exception as e:
             logging.error(f"LLM generation error: {e}")
             return None
@@ -204,14 +207,16 @@ class ArxivStreamProcessor:
         
         response = self.llm_client.generate(prompt)
         if response:
-            return {
+            # Create a JSON-serializable dictionary
+            idea_dict = {
                 'paper_id': paper['id'],
                 'paper_title': paper['title'],
                 'paper_link': paper['link'],
-                'generated_idea': response,
+                'generated_idea': str(response),  # Ensure response is converted to string
                 'timestamp': datetime.now().isoformat(),
                 'relevance_score': paper.get('relevance_score', 0)
             }
+            return idea_dict
         return None
 
     def stream_papers_to_kafka(self, categories: List[str], topic: str, 
@@ -249,8 +254,7 @@ class ArxivStreamProcessor:
                 self.logger.error(f"Error in paper streaming: {e}")
                 time.sleep(300)  # Wait 5 minutes before retrying
 
-    def process_ideas(self, input_topic: str, output_topic: str, 
-                 company_context: Dict):
+    def process_ideas(self, input_topic: str, output_topic: str, company_context: Dict):
         """Process papers and generate ideas with error handling"""
         self.create_topic_if_not_exists(input_topic)
         self.create_topic_if_not_exists(output_topic)
@@ -273,22 +277,30 @@ class ArxivStreamProcessor:
                 idea = self.generate_research_idea(paper, company_context)
                 
                 if idea:
-                    self.producer.produce(
-                        output_topic,
-                        key=paper['id'],
-                        value=json.dumps(idea)
-                    )
+                    try:
+                        # Verify JSON serialization before producing
+                        json_str = json.dumps(idea)
+                        
+                        self.producer.produce(
+                            output_topic,
+                            key=paper['id'],
+                            value=json_str
+                        )
+                        
+                        self.producer.flush()
+                        self.logger.info(f"Generated idea for paper: {paper['title']}")
+                        
+                        # Print the generated idea
+                        print(f"\nGenerated Research Idea:")
+                        print(f"Paper Title: {idea['paper_title']}")
+                        print(f"Paper Link: {idea['paper_link']}")
+                        print(f"Idea:\n{idea['generated_idea']}")
+                        print(f"Relevance Score: {idea['relevance_score']}")
+                        print("-" * 80)
                     
-                    self.producer.flush()
-                    self.logger.info(f"Generated idea for paper: {paper['title']}")
-                    
-                    # Print the generated idea
-                    print(f"\nGenerated Research Idea:")
-                    print(f"Paper Title: {idea['paper_title']}")
-                    print(f"Paper Link: {idea['paper_link']}")
-                    print(f"Idea:\n{idea['generated_idea']}")
-                    print(f"Relevance Score: {idea['relevance_score']}")
-                    print("-" * 80)
+                    except TypeError as e:
+                        self.logger.error(f"JSON serialization error: {e}")
+                        continue
                 
             except Exception as e:
                 self.logger.error(f"Error processing ideas: {e}")
