@@ -8,6 +8,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
 
 export default function DashboardPage() {
+  //const { messages, isConnected } = useKafkaConsumer();
+
   const company = {
     name: 'Nexus AI',
     description:
@@ -17,6 +19,15 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
+      {/*{!isConnected && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Unable to connect to real-time updates. Retrying...
+          </AlertDescription>
+        </Alert>
+      )}*/}
+
       <CompanyOverview company={company} />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">

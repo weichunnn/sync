@@ -1,5 +1,7 @@
 # Re:Sync
 
+![landing](docs/1.png)
+
 A real-time AI project monitoring platform built with Next.js and Confluent Kafka.
 
 ## Overview
@@ -21,8 +23,14 @@ Re:Sync helps organizations track their AI initiatives by aggregating insights f
 - **Data Sources**:
   - ArXiv API
   - Reddit API
-  - GitHub API
-  - HuggingFace Hub
+  - GitHub API (coming soon)
+  - HuggingFace Hub (coming soon)
+
+## Images
+
+![home](docs/2.png)
+![projects](docs/3.png)
+![news feed](docs/4.png)
 
 ## Getting Started
 

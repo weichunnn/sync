@@ -15,6 +15,8 @@ export const kafka = new Kafka({
     username: KAFKA_CONFIG.API_KEY,
     password: KAFKA_CONFIG.API_SECRET,
   },
+  // Disable compression for Edge compatibility
+  compression: null,
 });
 
 export const consumer = kafka.consumer({
@@ -29,16 +31,3 @@ export const consumer = kafka.consumer({
     retries: 8,
   },
 });
-
-export async function connectConsumer() {
-  try {
-    await consumer.connect();
-    await consumer.subscribe({
-      topics: ['research_ideas', 'sentiment_analysis', 'resync'],
-      fromBeginning: false,
-    });
-    console.log('Successfully connected to Confluent Cloud');
-  } catch (error) {
-    console.error('Error connecting to Confluent Cloud:', error);
-  }
-}
